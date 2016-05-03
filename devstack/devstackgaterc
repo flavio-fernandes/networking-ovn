@@ -53,9 +53,6 @@ r="$r|(?:tempest\.api\.compute\.test_quotas*)"
 r="$r|(?:tempest\.api\.compute\.test_versions*)"
 r="$r|(?:tempest\.api\.compute\.volumes*)"
 
-# exclude tests that are known to be broken
-r="$r|(?:tempest\.cmd\.verify_tempest_config*)"
-
 # End list of exclusions.
 r="$r)"
 

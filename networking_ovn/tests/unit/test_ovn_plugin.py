@@ -16,11 +16,11 @@
 
 import copy
 import mock
+from neutron_lib import exceptions as n_exc
 from oslo_utils import uuidutils
 import six
 from webob import exc
 
-from neutron.common import exceptions as n_exc
 from neutron import context
 from neutron.core_extensions.qos import QosCoreResourceExtension
 from neutron.db.qos import api as qos_api
@@ -318,7 +318,7 @@ class TestQosOvnPlugin(OVNPluginTestCase):
 
     def _create_qos_bw_limit_rule(self, policy_id):
         ret = qos_rule.QosBandwidthLimitRule()
-        ret.id = 'rule-uuid'
+        ret.id = uuidutils.generate_uuid()
         ret.max_kbps = 50
         ret.max_burst_kbps = 500
         ret.obj_reset_changes()
@@ -408,28 +408,6 @@ class TestOvnPluginACLs(OVNPluginTestCase):
         self.fake_subnet = {'id': 'subnet_id1',
                             'ip_version': 4,
                             'cidr': '1.1.1.0/24'}
-
-    def test__drop_all_ip_traffic_for_port(self):
-        acls = self.plugin._drop_all_ip_traffic_for_port(self.fake_port)
-        acl_to_lport = {'action': 'drop', 'direction': 'to-lport',
-                        'external_ids': {'neutron:lport':
-                                         self.fake_port['id']},
-                        'log': False, 'lport': self.fake_port['id'],
-                        'lswitch': 'neutron-network_id1',
-                        'match': 'outport == "fake_port_id1" && ip',
-                        'priority': 1001}
-        acl_from_lport = {'action': 'drop', 'direction': 'from-lport',
-                          'external_ids': {'neutron:lport':
-                                           self.fake_port['id']},
-                          'log': False, 'lport': self.fake_port['id'],
-                          'lswitch': 'neutron-network_id1',
-                          'match': 'inport == "fake_port_id1" && ip',
-                          'priority': 1001}
-        for acl in acls:
-            if 'to-lport' in acl.values():
-                self.assertEqual(acl_to_lport, acl)
-            if 'from-lport' in acl.values():
-                self.assertEqual(acl_from_lport, acl)
 
     def test__add_acl_dhcp_no_cache(self):
         self.plugin._ovn.add_acl = mock.Mock()
@@ -789,6 +767,12 @@ class TestOvnPluginL3(OVNPluginTestCase):
         self.fake_subnet = {'id': 'subnet-id',
                             'cidr': '10.0.0.1/24'}
 
+        self.fake_router = {'id': 'router-id',
+                            'name': 'router',
+                            'admin_state_up': False,
+                            'routes': [{'destination': '1.1.1.0/24',
+                                        'nexthop': '2.2.2.3'}]}
+
     @mock.patch('neutron.db.l3_dvr_db.L3_NAT_with_dvr_db_mixin.'
                 'add_router_interface')
     def test_add_router_interface(self, func):
@@ -828,6 +812,83 @@ class TestOvnPluginL3(OVNPluginTestCase):
 
         self.plugin._ovn.delete_lrouter_port.assert_called_once_with(
             'lrp-router-port-id', 'neutron-router-id', if_exists=False)
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_admin_state_no_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'admin_state_up': False}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.assertFalse(self.plugin._ovn.update_lrouter.called)
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_admin_state_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'admin_state_up': True}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.plugin._ovn.update_lrouter.assert_called_once_with(
+            'neutron-router-id', enabled=True)
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_name_no_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'name': 'router'}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.assertFalse(self.plugin._ovn.update_lrouter.called)
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_name_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'name': 'test'}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.plugin._ovn.update_lrouter.assert_called_once_with(
+            'neutron-router-id',
+            external_ids={'neutron:router_name': 'test'})
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_static_route_no_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'routes': [{'destination': '1.1.1.0/24',
+                                              'nexthop': '2.2.2.3'}]}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.assertFalse(self.plugin._ovn.add_static_route.called)
+        self.assertFalse(self.plugin._ovn.delete_static_route.called)
+
+    @mock.patch('neutron.db.l3_db.L3_NAT_db_mixin.update_router')
+    def test_update_router_static_route_change(self, func):
+        router_id = 'router-id'
+        update_data = {'router': {'routes': [{'destination': '2.2.2.0/24',
+                                              'nexthop': '3.3.3.3'}]}}
+        with mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.'
+                        'get_router', return_value=self.fake_router),\
+            mock.patch('neutron.db.extraroute_db.ExtraRoute_dbonly_mixin.'
+                       'update_router', return_value=self.fake_router):
+            self.plugin.update_router(self.context, router_id, update_data)
+        self.plugin._ovn.add_static_route.assert_called_once_with(
+            'neutron-router-id',
+            ip_prefix='2.2.2.0/24', nexthop='3.3.3.3')
+        self.plugin._ovn.delete_static_route.assert_called_once_with(
+            'neutron-router-id',
+            ip_prefix='1.1.1.0/24', nexthop='2.2.2.3')
 
 
 class TestL3NatTestCase(test_l3_plugin.L3NatDBIntTestCase,

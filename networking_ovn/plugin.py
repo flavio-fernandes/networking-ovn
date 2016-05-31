@@ -15,7 +15,9 @@ import collections
 
 import netaddr
 
+from neutron_lib.api import validators
 from neutron_lib import constants as const
+from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import importutils
@@ -34,9 +36,9 @@ from neutron.api.v2 import attributes as attr
 from neutron.callbacks import events
 from neutron.callbacks import registry
 from neutron.callbacks import resources
-from neutron.common import exceptions as n_exc
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
+from neutron.common import utils as n_utils
 from neutron import context as n_context
 from neutron.core_extensions import base as base_core
 from neutron.core_extensions import qos as qos_core
@@ -70,6 +72,7 @@ from neutron.objects.qos import rule as qos_rule
 from neutron.services.qos import qos_consts
 
 from networking_ovn._i18n import _, _LE, _LI, _LW
+from networking_ovn.common import acl as acl_utils
 from networking_ovn.common import config
 from networking_ovn.common import constants as ovn_const
 from networking_ovn.common import extensions
@@ -244,7 +247,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _get_attribute(self, obj, attribute):
         res = obj.get(attribute)
-        if res is attr.ATTR_NOT_SPECIFIED:
+        if res is const.ATTR_NOT_SPECIFIED:
             res = None
         return res
 
@@ -710,7 +713,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def get_data_from_binding_profile(self, context, port):
         if (ovn_const.OVN_PORT_BINDING_PROFILE not in port or
-                not attr.is_attr_set(
+                not validators.is_attr_set(
                     port[ovn_const.OVN_PORT_BINDING_PROFILE])):
             return {}
 
@@ -824,7 +827,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
             # NOTE(arosen): _process_portbindings_create_and_update
             # does not set the binding on the port so we do it here.
             if (ovn_const.OVN_PORT_BINDING_PROFILE in pdict and
-                attr.is_attr_set(
+                validators.is_attr_set(
                     pdict[ovn_const.OVN_PORT_BINDING_PROFILE])):
                 db_port[ovn_const.OVN_PORT_BINDING_PROFILE] = \
                     pdict[ovn_const.OVN_PORT_BINDING_PROFILE]
@@ -886,7 +889,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
             const.DEVICE_OWNER_NETWORK_PREFIX):
             return False
 
-        if attr.is_attr_set(port.get(psec.PORTSECURITY)):
+        if validators.is_attr_set(port.get(psec.PORTSECURITY)):
             port_security_enabled = port[psec.PORTSECURITY]
         else:
             try:
@@ -899,37 +902,6 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
                 port_security_enabled = True
 
         return port_security_enabled
-
-    def _acl_direction(self, r, port):
-        if r['direction'] == 'ingress':
-            portdir = 'outport'
-            remote_portdir = 'inport'
-        else:
-            portdir = 'inport'
-            remote_portdir = 'outport'
-        match = '%s == "%s"' % (portdir, port['id'])
-        return match, remote_portdir
-
-    def _acl_ethertype(self, r):
-        match = ''
-        ip_version = None
-        icmp = None
-        if r['ethertype'] == 'IPv4':
-            match = ' && ip4'
-            ip_version = 'ip4'
-            icmp = 'icmp4'
-        elif r['ethertype'] == 'IPv6':
-            match = ' && ip6'
-            ip_version = 'ip6'
-            icmp = 'icmp6'
-        return match, ip_version, icmp
-
-    def _acl_remote_ip_prefix(self, r, ip_version):
-        if not r['remote_ip_prefix']:
-            return ''
-        src_or_dst = 'src' if r['direction'] == 'ingress' else 'dst'
-        return ' && %s.%s == %s' % (ip_version, src_or_dst,
-                                    r['remote_ip_prefix'])
 
     def _acl_get_subnet_from_cache(self, context, subnet_cache, subnet_id):
         if subnet_id in subnet_cache:
@@ -994,42 +966,18 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         return match, False
 
-    def _acl_protocol_and_ports(self, r, icmp):
-        protocol = None
-        match = ''
-        if r['protocol'] in ('tcp', 'udp'):
-            protocol = r['protocol']
-            port_match = '%s.dst' % protocol
-        elif r['protocol'] == 'icmp':
-            protocol = icmp
-            port_match = '%s.type' % icmp
-        if protocol:
-            match += ' && %s' % protocol
-            # If min or max are set to -1, then we just treat it like it wasn't
-            # specified at all and don't match on it.
-            min_port = r['port_range_min']
-            max_port = r['port_range_max']
-            if (min_port and min_port == max_port and min_port != -1):
-                match += ' && %s == %d' % (port_match, min_port)
-            else:
-                if min_port and min_port != -1:
-                    match += ' && %s >= %d' % (port_match, min_port)
-                if max_port and max_port != -1:
-                    match += ' && %s <= %d' % (port_match, max_port)
-        return match
-
     def _add_sg_rule_acl_for_port(self, context, port, r, sg_ports_cache,
                                   subnet_cache):
         # Update the match based on which direction this rule is for (ingress
         # or egress).
-        match, remote_portdir = self._acl_direction(r, port)
+        match, remote_portdir = acl_utils.acl_direction(r, port)
 
         # Update the match for IPv4 vs IPv6.
-        ip_match, ip_version, icmp = self._acl_ethertype(r)
+        ip_match, ip_version, icmp = acl_utils.acl_ethertype(r)
         match += ip_match
 
         # Update the match if an IPv4 or IPv6 prefix was specified.
-        match += self._acl_remote_ip_prefix(r, ip_version)
+        match += acl_utils.acl_remote_ip_prefix(r, ip_version)
 
         group_match, empty_match = self._acl_remote_group_id(context, r,
                                                              sg_ports_cache,
@@ -1046,7 +994,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         # Update the match for the protocol (tcp, udp, icmp) and port/type
         # range if specified.
-        match += self._acl_protocol_and_ports(r, icmp)
+        match += acl_utils.acl_protocol_and_ports(r, icmp)
 
         # Finally, create the ACL entry for the direction specified.
         dir_map = {
@@ -1103,22 +1051,6 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
             acl_list.append(acl)
         return acl_list
 
-    def _drop_all_ip_traffic_for_port(self, port):
-        acl_list = []
-        for direction, p in (('from-lport', 'inport'),
-                             ('to-lport', 'outport')):
-            lswitch = utils.ovn_name(port['network_id'])
-            lport = port['id']
-            acl = {"lswitch": lswitch, "lport": lport,
-                   "priority": ovn_const.ACL_PRIORITY_DROP,
-                   "action": ovn_const.ACL_ACTION_DROP,
-                   "log": False,
-                   "direction": direction,
-                   "match": '%s == "%s" && ip' % (p, port['id']),
-                   "external_ids": {'neutron:lport': port['id']}}
-            acl_list.append(acl)
-        return acl_list
-
     def _add_acls(self, context, port,
                   sg_cache=None, sg_ports_cache=None, subnet_cache=None):
         acl_list = []
@@ -1127,7 +1059,7 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
             return acl_list
 
         # Drop all IP traffic to and from the logical port by default.
-        acl_list += self._drop_all_ip_traffic_for_port(port)
+        acl_list += acl_utils.drop_all_ip_traffic_for_port(port)
 
         if subnet_cache is None:
             subnet_cache = {}
@@ -1278,9 +1210,11 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
         router_name = utils.ovn_name(router['id'])
         external_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
                         router.get('name', 'no_router_name')}
+        enabled = router.get('admin_state_up')
         with self._ovn.transaction(check_error=True) as txn:
             txn.add(self._ovn.create_lrouter(router_name,
-                                             external_ids=external_ids
+                                             external_ids=external_ids,
+                                             enabled=enabled
                                              ))
 
     def delete_router(self, context, router_id):
@@ -1294,14 +1228,44 @@ class OVNPlugin(db_base_plugin_v2.NeutronDbPluginV2,
         original_router = self.get_router(context, id)
         result = super(OVNPlugin, self).update_router(
             context, id, router)
+
+        update = {}
+        added = []
+        removed = []
+        router_name = utils.ovn_name(id)
+        if 'admin_state_up' in router['router']:
+            enabled = router['router']['admin_state_up']
+            if enabled != original_router['admin_state_up']:
+                update['enabled'] = enabled
+
         if 'name' in router['router']:
-            router_name = utils.ovn_name(id)
-            external_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
-                            router['router']['name']}
+            if router['router']['name'] != original_router['name']:
+                external_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                                router['router']['name']}
+                update['external_ids'] = external_ids
+
+        """ Update static routes """
+        if 'routes' in router['router']:
+            routes = router['router']['routes']
+            added, removed = n_utils.diff_list_of_dict(
+                original_router['routes'], routes)
+
+        if update or added or removed:
             try:
-                self._ovn.update_lrouter(router_name,
-                                         external_ids=external_ids
-                                         ).execute(check_error=True)
+                with self._ovn.transaction(check_error=True) as txn:
+                    if update:
+                        txn.add(self._ovn.update_lrouter(router_name,
+                                **update))
+
+                    for route in added:
+                        txn.add(self._ovn.add_static_route(router_name,
+                                ip_prefix=route['destination'],
+                                nexthop=route['nexthop']))
+
+                    for route in removed:
+                        txn.add(self._ovn.delete_static_route(router_name,
+                                ip_prefix=route['destination'],
+                                nexthop=route['nexthop']))
             except Exception:
                 LOG.exception(_LE('Unable to update lrouter for %s'), id)
                 super(OVNPlugin, self).update_router(context,

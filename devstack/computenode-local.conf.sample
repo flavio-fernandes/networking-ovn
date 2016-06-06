@@ -11,6 +11,9 @@
 
 [[local|localrc]]
 
+##OFFLINE=True
+##RECLONE=no
+
 DATABASE_PASSWORD=password
 RABBIT_PASSWORD=password
 SERVICE_PASSWORD=password
@@ -22,8 +25,11 @@ ADMIN_PASSWORD=password
 # use the latest patches in blp's ovn branch:
 #OVN_REPO=http://github.com/blp/ovs-reviews.git
 #OVN_BRANCH=origin/ovn
+OVN_REPO=http://github.com/flavio-fernandes/ovs.git
+OVN_BRANCH=origin/devel
 
-enable_plugin networking-ovn http://git.openstack.org/openstack/networking-ovn
+##enable_plugin networking-ovn http://git.openstack.org/openstack/networking-ovn
+enable_plugin networking-ovn https://github.com/flavio-fernandes/networking-ovn.git devel
 
 disable_all_services
 enable_service n-cpu

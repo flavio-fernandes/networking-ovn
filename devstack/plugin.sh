@@ -133,41 +133,32 @@ function configure_ovn_plugin {
     echo "Configuring Neutron for OVN"
 
     if is_service_enabled q-svc ; then
- 
-        if [[ "$Q_PLUGIN" == "ovn" ]]; then
-            # NOTE(arosen) needed for tempest
-            export NETWORK_API_EXTENSIONS=$(python -c \
+        # NOTE(arosen) needed for tempest
+        export NETWORK_API_EXTENSIONS=$(python -c \
+            'from networking_ovn.common import extensions ;\
+             print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS)')
+        if [[ "$OVN_L3_MODE" == "True" ]]; then
+            export NETWORK_API_EXTENSIONS=$NETWORK_API_EXTENSIONS,$(python -c \
                 'from networking_ovn.common import extensions ;\
-                 print ",".join(extensions.SUPPORTED_API_EXTENSIONS)')
-
-            iniset $NEUTRON_CONF DEFAULT core_plugin "$Q_PLUGIN_CLASS"
-            iniset $NEUTRON_CONF DEFAULT service_plugins "qos"
-            iniset $Q_PLUGIN_CONF_FILE ovn ovsdb_connection "$OVN_NB_REMOTE"
-            iniset $Q_PLUGIN_CONF_FILE ovn ovn_l3_mode "$OVN_L3_MODE"
+                 print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS_OVN_L3)')
         else
-            # NOTE(arosen) needed for tempest
-            export NETWORK_API_EXTENSIONS=$(python -c \
+            export NETWORK_API_EXTENSIONS=$NETWORK_API_EXTENSIONS,$(python -c \
                 'from networking_ovn.common import extensions ;\
-                 print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS)')
-            if [[ "$OVN_L3_MODE" == "True" ]]; then
-                export NETWORK_API_EXTENSIONS=$NETWORK_API_EXTENSIONS,$(python -c \
-                    'from networking_ovn.common import extensions ;\
-                     print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS_OVN_L3)')
-            else
-                export NETWORK_API_EXTENSIONS=$NETWORK_API_EXTENSIONS,$(python -c \
-                    'from networking_ovn.common import extensions ;\
-                     print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS_NEUTRON_L3)')
-            fi
-            NEUTRON_CONF=/etc/neutron/neutron.conf
-            iniset $NEUTRON_CONF ovn ovsdb_connection "$OVN_NB_REMOTE"
-            iniset $NEUTRON_CONF ovn ovn_l3_mode "$OVN_L3_MODE"
+                 print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS_NEUTRON_L3)')
         fi
+        NEUTRON_CONF=/etc/neutron/neutron.conf
+        iniset $NEUTRON_CONF ovn ovsdb_connection "$OVN_NB_REMOTE"
+        iniset $NEUTRON_CONF ovn ovn_l3_mode "$OVN_L3_MODE"
     fi
 
     if is_service_enabled q-l3 ; then
         if [[ "$OVN_L3_MODE" == "True" ]]; then
             die $LINENO "The q-l3 service must be disabled with OVN_L3_MODE set to True."
         fi
+    fi
+
+    if is_service_enabled q-qos ; then
+        iniset $NEUTRON_CONF qos notification_drivers ovn-qos
     fi
 
     if is_service_enabled q-dhcp ; then

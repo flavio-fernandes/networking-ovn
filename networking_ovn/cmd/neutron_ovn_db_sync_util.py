@@ -18,21 +18,30 @@ from oslo_log import log as logging
 
 from neutron import context
 from neutron import manager
+from neutron import opts as neutron_options
+from neutron.plugins.ml2 import plugin as ml2_plugin
 
 from networking_ovn._i18n import _LI, _LE
 from networking_ovn.common import config as ovn_config
+from networking_ovn.ml2 import mech_driver
 from networking_ovn import ovn_nb_sync
 from networking_ovn.ovsdb import impl_idl_ovn
-from networking_ovn import plugin as ovn_plugin
 
 LOG = logging.getLogger(__name__)
 
 
-class OVNPlugin(ovn_plugin.OVNPlugin):
+class Ml2Plugin(ml2_plugin.Ml2Plugin):
 
-    supported_extension_aliases = []
+    def _setup_dhcp(self):
+        pass
 
     def _start_rpc_notifiers(self):
+        pass
+
+
+class OVNMechanismDriver(mech_driver.OVNMechanismDriver):
+
+    def subscribe(self):
         pass
 
     def post_fork_initialize(self, resource, event, trigger, **kwargs):
@@ -41,14 +50,9 @@ class OVNPlugin(ovn_plugin.OVNPlugin):
 
 def setup_conf():
     conf = cfg.CONF
-    cfg.CONF.core_plugin = (
-        'networking_ovn.cmd.neutron_ovn_db_sync_util.OVNPlugin')
+    ml2_group, ml2_opts = neutron_options.list_ml2_conf_opts()[0]
+    cfg.CONF.register_cli_opts(ml2_opts, ml2_group)
     ovn_group, ovn_opts = ovn_config.list_opts()[0]
-    # 'ovn_l3_mode' option is not used for sync, hence deleting it
-    for index, opt in enumerate(ovn_opts):
-        if opt.name == 'ovn_l3_mode':
-            del ovn_opts[index]
-
     cfg.CONF.register_cli_opts(ovn_opts, group=ovn_group)
     db_group, neutron_db_opts = db_options.list_opts()[0]
     cfg.CONF.register_cli_opts(neutron_db_opts, db_group)
@@ -79,17 +83,27 @@ def main():
                       '"repair"'), mode)
         return
 
-    # we dont want the service plugins to be loaded.
-    conf.service_plugins = []
-    ovn_plugin = manager.NeutronManager.get_plugin()
+    if cfg.CONF.core_plugin.endswith('Ml2Plugin'):
+        cfg.CONF.core_plugin = (
+            'networking_ovn.cmd.neutron_ovn_db_sync_util.Ml2Plugin')
+        cfg.CONF.ml2.mechanism_drivers = ['ovn-sync']
+        conf.service_plugins = ['networking_ovn.l3.l3_ovn.OVNL3RouterPlugin']
+    else:
+        LOG.error(_LE('Invalid core plugin : ["%s"].'), cfg.CONF.core_plugin)
+        return
+
     try:
-        ovn_plugin._ovn = impl_idl_ovn.OvsdbOvnIdl(ovn_plugin)
+        ovn_api = impl_idl_ovn.OvsdbOvnIdl(None)
     except RuntimeError:
         LOG.error(_LE('Invalid --ovn-ovsdb_connection parameter provided.'))
         return
 
+    core_plugin = manager.NeutronManager.get_plugin()
+    ovn_driver = core_plugin.mechanism_manager.mech_drivers['ovn-sync'].obj
+    ovn_driver._ovn_property = ovn_api
+
     synchronizer = ovn_nb_sync.OvnNbSynchronizer(
-        ovn_plugin, ovn_plugin._ovn, mode)
+        core_plugin, ovn_api, mode, ovn_driver)
 
     ctx = context.get_admin_context()
 

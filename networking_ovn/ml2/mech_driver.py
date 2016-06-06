@@ -29,15 +29,16 @@ from neutron.extensions import portbindings
 from neutron.extensions import portsecurity as psec
 from neutron.extensions import providernet as pnet
 from neutron import manager
-from neutron.objects.qos import rule as qos_rule
 from neutron.plugins.ml2 import driver_api
 from neutron.services.qos import qos_consts
 
-from networking_ovn._i18n import _LI
+from networking_ovn._i18n import _, _LI
 from networking_ovn.common import acl as ovn_acl
 from networking_ovn.common import config
 from networking_ovn.common import constants as ovn_const
 from networking_ovn.common import utils
+from networking_ovn.ml2 import qos_driver
+from networking_ovn import ovn_nb_sync
 from networking_ovn.ovsdb import impl_idl_ovn
 from networking_ovn.ovsdb import ovsdb_monitor
 
@@ -81,10 +82,22 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         called prior to this method being called.
         """
         LOG.info(_LI("Starting OVNMechanismDriver"))
+        self._ovn_property = None
         self._plugin_property = None
         self._setup_vif_port_bindings()
         self.subscribe()
-        # TODO(rtheis): Is any initialization required for QoS?
+        self.qos_driver = qos_driver.OVNQosDriver(self)
+
+    @property
+    def _ovn(self):
+        if self._ovn_property is None:
+            # TODO(rtheis): This is required for neutron L3 agent callbacks.
+            # These callbacks are not run in a child process and thus don't
+            # have post_fork_initialize() called. Investigate why this occurs
+            # and if anything can be done to fix this.
+            LOG.info(_LI("Getting OvsdbOvnIdl"))
+            self._ovn_property = impl_idl_ovn.OvsdbOvnIdl(self)
+        return self._ovn_property
 
     @property
     def _plugin(self):
@@ -116,35 +129,36 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             }
 
     def subscribe(self):
-        registry.subscribe(
-            self.post_fork_initialize,
-            resources.PROCESS,
-            events.AFTER_CREATE)
-        registry.subscribe(
-            self.sg_callback,
-            resources.SECURITY_GROUP,
-            events.AFTER_UPDATE)
-        registry.subscribe(
-            self.sg_callback,
-            resources.SECURITY_GROUP_RULE,
-            events.AFTER_CREATE)
-        registry.subscribe(
-            self.sg_callback,
-            resources.SECURITY_GROUP_RULE,
-            events.BEFORE_DELETE)
+        registry.subscribe(self.post_fork_initialize,
+                           resources.PROCESS,
+                           events.AFTER_CREATE)
+
+        # Handle security group/rule notifications
+        registry.subscribe(self._process_sg_notification,
+                           resources.SECURITY_GROUP,
+                           events.AFTER_UPDATE)
+        registry.subscribe(self._process_sg_notification,
+                           resources.SECURITY_GROUP_RULE,
+                           events.AFTER_CREATE)
+        registry.subscribe(self._process_sg_notification,
+                           resources.SECURITY_GROUP_RULE,
+                           events.BEFORE_DELETE)
 
     def post_fork_initialize(self, resource, event, trigger, **kwargs):
-        self._ovn = impl_idl_ovn.OvsdbOvnIdl(self, trigger)
+        self._ovn_property = impl_idl_ovn.OvsdbOvnIdl(self, trigger)
 
-        # TODO(rtheis): Synchronizer needs to use ML2 ...
-        # if trigger.im_class == ovsdb_monitor.OvnWorker:
-        #     # Call the synchronization task if its ovn worker
-        #     # This sync neutron DB to OVN-NB DB only in inconsistent states
-        #     self.synchronizer = ovn_nb_sync.OvnNbSynchronizer(
-        #         self, self._ovn, config.get_ovn_neutron_sync_mode())
-        #     self.synchronizer.sync()
+        if trigger.im_class == ovsdb_monitor.OvnWorker:
+            # Call the synchronization task if its ovn worker
+            # This sync neutron DB to OVN-NB DB only in inconsistent states
+            self.synchronizer = ovn_nb_sync.OvnNbSynchronizer(
+                self._plugin,
+                self._ovn,
+                config.get_ovn_neutron_sync_mode(),
+                self
+            )
+            self.synchronizer.sync()
 
-    def sg_callback(self, resource, event, trigger, **kwargs):
+    def _process_sg_notification(self, resource, event, trigger, **kwargs):
         sg_id = None
         sg_rule = None
         is_add_acl = True
@@ -165,12 +179,12 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         # TODO(russellb) It's possible for Neutron and OVN to get out of sync
         # here. If updating ACls fails somehow, we're out of sync until another
         # change causes another refresh attempt.
-        ovn_acl._update_acls_for_security_group(self._plugin,
-                                                admin_context,
-                                                self._ovn,
-                                                sg_id,
-                                                rule=sg_rule,
-                                                is_add_acl=is_add_acl)
+        ovn_acl.update_acls_for_security_group(self._plugin,
+                                               admin_context,
+                                               self._ovn,
+                                               sg_id,
+                                               rule=sg_rule,
+                                               is_add_acl=is_add_acl)
 
     def create_network_postcommit(self, context):
         """Create a network.
@@ -221,47 +235,6 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         self._ovn.set_lswitch_ext_id(
             utils.ovn_name(network_id), ext_id).execute(check_error=True)
 
-    def _get_network_ports_for_policy(self, admin_context,
-                                      network_id, policy_id):
-        all_rules = qos_rule.get_rules(admin_context, policy_id)
-        ports = self._plugin.get_ports(
-            admin_context, filters={"network_id": [network_id]})
-        port_ids = []
-        for port in ports:
-            include = True
-            for rule in all_rules:
-                if not rule.should_apply_to_port(port):
-                    include = False
-                    break
-            if include:
-                port_ids.append(port['id'])
-        return port_ids
-
-    def _qos_get_ovn_options(self, admin_context, policy_id):
-        all_rules = qos_rule.get_rules(admin_context, policy_id)
-        options = {}
-        for rule in all_rules:
-            if isinstance(rule, qos_rule.QosBandwidthLimitRule):
-                if rule.max_kbps:
-                    options['policing_rate'] = str(rule.max_kbps)
-                if rule.max_burst_kbps:
-                    options['policing_burst'] = str(rule.max_burst_kbps)
-        return options
-
-    def _update_network_qos(self, network_id, policy_id):
-        admin_context = n_context.get_admin_context()
-        port_ids = self._get_network_ports_for_policy(
-            admin_context, network_id, policy_id)
-        qos_rule_options = self._qos_get_ovn_options(
-            admin_context, policy_id)
-
-        if qos_rule_options is not None:
-            with self._ovn.transaction(check_error=True) as txn:
-                for port_id in port_ids:
-                    txn.add(self._ovn.set_lport(
-                        lport_name=port_id,
-                        options=qos_rule_options))
-
     def update_network_postcommit(self, context):
         """Update a network.
 
@@ -282,12 +255,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         original_network = context.original
         if network['name'] != original_network['name']:
             self._set_network_name(network['id'], network['name'])
-
-        if (qos_consts.QOS_POLICY_ID in network and
-            (network[qos_consts.QOS_POLICY_ID] !=
-             original_network[qos_consts.QOS_POLICY_ID])):
-            self._update_network_qos(network['id'],
-                                     network[qos_consts.QOS_POLICY_ID])
+        self.qos_driver.update_network(network, original_network)
 
     def delete_network_postcommit(self, context):
         """Delete a network.
@@ -323,7 +291,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                 not validators.is_attr_set(
                     port[ovn_const.OVN_PORT_BINDING_PROFILE])):
             return {}
-
+        param_set = {}
         param_dict = {}
         for param_set in ovn_const.OVN_PORT_BINDING_PROFILE_PARAMS:
             param_keys = param_set.keys()
@@ -401,11 +369,9 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         result in the deletion of the resource.
         """
         port = context.current
-        binding_profile = self.validate_and_get_data_from_binding_profile(port)
-        ovn_port_info = self.get_ovn_port_options(binding_profile, port)
+        ovn_port_info = self.get_ovn_port_options(port)
         self._insert_port_provisioning_block(port)
         self.create_port_in_ovn(port, ovn_port_info)
-        # TODO(rtheis): Are changes required for QoS?
 
     def _get_allowed_addresses_from_port(self, port):
         if not port.get(psec.PORTSECURITY):
@@ -431,13 +397,14 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
 
         return list(allowed_addresses)
 
-    def get_ovn_port_options(self, binding_profile, port):
+    def get_ovn_port_options(self, port, qos_options=None):
+        binding_profile = self.validate_and_get_data_from_binding_profile(port)
+        if qos_options is None:
+            qos_options = self.qos_driver.get_qos_options(port)
         vtep_physical_switch = binding_profile.get('vtep_physical_switch')
-        vtep_logical_switch = None
         parent_name = None
         tag = None
         port_type = None
-        options = None
 
         if vtep_physical_switch:
             vtep_logical_switch = binding_profile.get('vtep_logical_switch')
@@ -447,6 +414,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             addresses = "unknown"
             port_security = []
         else:
+            options = qos_options
             parent_name = binding_profile.get('parent_name')
             tag = binding_profile.get('tag')
             addresses = port['mac_address']
@@ -456,29 +424,6 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
 
         return OvnPortInfo(port_type, options, [addresses], port_security,
                            parent_name, tag)
-
-    def _refresh_remote_security_group(self,
-                                       admin_context,
-                                       sec_group,
-                                       sg_cache=None,
-                                       sg_ports_cache=None,
-                                       subnet_cache=None,
-                                       exclude_ports=None):
-        # For sec_group, refresh acls for all other security groups that have
-        # rules referencing sec_group as 'remote_group'.
-        filters = {'remote_group_id': [sec_group]}
-        refering_rules = self._plugin.get_security_group_rules(
-            admin_context, filters, fields=['security_group_id'])
-        sg_ids = set(r['security_group_id'] for r in refering_rules)
-        for sg_id in sg_ids:
-            ovn_acl._update_acls_for_security_group(self._plugin,
-                                                    admin_context,
-                                                    self._ovn,
-                                                    sg_id,
-                                                    sg_cache,
-                                                    sg_ports_cache,
-                                                    subnet_cache,
-                                                    exclude_ports)
 
     def create_port_in_ovn(self, port, ovn_port_info):
         external_ids = {ovn_const.OVN_PORT_NAME_EXT_ID_KEY: port['name']}
@@ -503,17 +448,17 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                     options=ovn_port_info.options,
                     type=ovn_port_info.type,
                     port_security=ovn_port_info.port_security))
-            acls_new = ovn_acl._add_acls(self._plugin, admin_context,
-                                         port, sg_cache, sg_ports_cache,
-                                         subnet_cache)
+            acls_new = ovn_acl.add_acls(self._plugin, admin_context,
+                                        port, sg_cache, sg_ports_cache,
+                                        subnet_cache)
             for acl in acls_new:
                 txn.add(self._ovn.add_acl(**acl))
 
         if len(port.get('fixed_ips')):
             for sg_id in port.get('security_groups', []):
-                self._refresh_remote_security_group(
-                    admin_context, sg_id,
-                    sg_cache, sg_ports_cache,
+                ovn_acl.refresh_remote_security_group(
+                    self._plugin, admin_context, self._ovn,
+                    sg_id, sg_cache, sg_ports_cache,
                     subnet_cache, [port['id']])
 
     def update_port_precommit(self, context):
@@ -551,10 +496,11 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         """
         port = context.current
         original_port = context.original
-        binding_profile = self.validate_and_get_data_from_binding_profile(port)
-        ovn_port_info = self.get_ovn_port_options(binding_profile, port)
+        self.update_port(port, original_port)
+
+    def update_port(self, port, original_port, qos_options=None):
+        ovn_port_info = self.get_ovn_port_options(port, qos_options)
         self._update_port_in_ovn(original_port, port, ovn_port_info)
-        # TODO(rtheis): Are changes required for QoS?
 
     def _update_port_in_ovn(self, original_port, port, ovn_port_info):
         external_ids = {
@@ -579,12 +525,12 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             txn.add(self._ovn.delete_acl(
                     utils.ovn_name(port['network_id']),
                     port['id']))
-            acls_new = ovn_acl._add_acls(self._plugin,
-                                         admin_context,
-                                         port,
-                                         sg_cache,
-                                         sg_ports_cache,
-                                         subnet_cache)
+            acls_new = ovn_acl.add_acls(self._plugin,
+                                        admin_context,
+                                        port,
+                                        sg_cache,
+                                        sg_ports_cache,
+                                        subnet_cache)
             for acl in acls_new:
                 txn.add(self._ovn.add_acl(**acl))
 
@@ -601,8 +547,8 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             return port
 
         for sg_id in (attached_sg_ids | detached_sg_ids):
-            self._refresh_remote_security_group(
-                admin_context, sg_id,
+            ovn_acl.refresh_remote_security_group(
+                self._plugin, admin_context, self._ovn, sg_id,
                 sg_cache, sg_ports_cache,
                 subnet_cache, [port['id']])
 
@@ -612,8 +558,8 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             # now we only need to take care of unchanged security groups.
             unchanged_sg_ids = new_sg_ids & old_sg_ids
             for sg_id in unchanged_sg_ids:
-                self._refresh_remote_security_group(
-                    admin_context, sg_id,
+                ovn_acl.refresh_remote_security_group(
+                    self._plugin, admin_context, self._ovn, sg_id,
                     sg_cache, sg_ports_cache,
                     subnet_cache, [port['id']])
 
@@ -641,7 +587,8 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         num_fixed_ips = len(port.get('fixed_ips'))
         if num_fixed_ips:
             for sg_id in sg_ids:
-                self._refresh_remote_security_group(admin_context, sg_id)
+                ovn_acl.refresh_remote_security_group(
+                    self._plugin, admin_context, self._ovn, sg_id)
 
     def bind_port(self, context):
         """Attempt to bind a port.

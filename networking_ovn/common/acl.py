@@ -14,8 +14,6 @@
 
 from neutron_lib import constants as const
 
-from neutron.common import constants as n_const
-
 from networking_ovn.common import constants as ovn_const
 from networking_ovn.common import utils
 
@@ -70,7 +68,7 @@ def acl_protocol_and_ports(r, icmp):
         port_match = '%s.dst' % protocol
     elif r.get('protocol') in (const.PROTO_NAME_ICMP,
                                const.PROTO_NAME_IPV6_ICMP,
-                               n_const.PROTO_NAME_IPV6_ICMP_LEGACY,
+                               const.PROTO_NAME_IPV6_ICMP_LEGACY,
                                str(const.PROTO_NUM_ICMP),
                                str(const.PROTO_NUM_IPV6_ICMP)):
         protocol = icmp
@@ -285,16 +283,16 @@ def _add_sg_rule_acl_for_port(plugin, admin_context, port, r,
     return add_sg_rule_acl_for_port(port, r, match)
 
 
-def _update_acls_for_security_group(plugin,
-                                    admin_context,
-                                    ovn,
-                                    security_group_id,
-                                    sg_cache=None,
-                                    sg_ports_cache=None,
-                                    subnet_cache=None,
-                                    exclude_ports=None,
-                                    rule=None,
-                                    is_add_acl=True):
+def update_acls_for_security_group(plugin,
+                                   admin_context,
+                                   ovn,
+                                   security_group_id,
+                                   sg_cache=None,
+                                   sg_ports_cache=None,
+                                   subnet_cache=None,
+                                   exclude_ports=None,
+                                   rule=None,
+                                   is_add_acl=True):
 
     # Setup the caches or use cache provided.
     sg_cache = sg_cache or {}
@@ -328,18 +326,19 @@ def _update_acls_for_security_group(plugin,
             acl = _add_sg_rule_acl_for_port(
                 plugin, admin_context, port, rule,
                 sg_ports_cache, subnet_cache)
-            # Remove lport and lswitch since we don't need them
-            acl.pop('lport')
-            acl.pop('lswitch')
-            acl_new_values_dict[port['id']] = acl
+            if acl:
+                # Remove lport and lswitch since we don't need them
+                acl.pop('lport')
+                acl.pop('lswitch')
+                acl_new_values_dict[port['id']] = acl
     else:
         for port in port_list:
-            acls_new = _add_acls(plugin,
-                                 admin_context,
-                                 port,
-                                 sg_cache,
-                                 sg_ports_cache,
-                                 subnet_cache)
+            acls_new = add_acls(plugin,
+                                admin_context,
+                                port,
+                                sg_cache,
+                                sg_ports_cache,
+                                subnet_cache)
             acl_new_values_dict[port['id']] = acls_new
 
     ovn.update_acls(list(lswitch_names),
@@ -349,8 +348,8 @@ def _update_acls_for_security_group(plugin,
                     is_add_acl=is_add_acl).execute(check_error=True)
 
 
-def _add_acls(plugin, admin_context, port, sg_cache,
-              sg_ports_cache, subnet_cache):
+def add_acls(plugin, admin_context, port, sg_cache,
+             sg_ports_cache, subnet_cache):
     acl_list = []
     sec_groups = port.get('security_groups', [])
     if not sec_groups:
@@ -385,3 +384,28 @@ def _add_acls(plugin, admin_context, port, sg_cache,
                 acl_list.append(acl)
 
     return acl_list
+
+
+def refresh_remote_security_group(plugin,
+                                  admin_context,
+                                  ovn,
+                                  sec_group,
+                                  sg_cache=None,
+                                  sg_ports_cache=None,
+                                  subnet_cache=None,
+                                  exclude_ports=None):
+    # For sec_group, refresh acls for all other security groups that have
+    # rules referencing sec_group as 'remote_group'.
+    filters = {'remote_group_id': [sec_group]}
+    refering_rules = plugin.get_security_group_rules(
+        admin_context, filters, fields=['security_group_id'])
+    sg_ids = set(r['security_group_id'] for r in refering_rules)
+    for sg_id in sg_ids:
+        update_acls_for_security_group(plugin,
+                                       admin_context,
+                                       ovn,
+                                       sg_id,
+                                       sg_cache,
+                                       sg_ports_cache,
+                                       subnet_cache,
+                                       exclude_ports)

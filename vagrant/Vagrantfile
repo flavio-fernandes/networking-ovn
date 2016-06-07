@@ -142,7 +142,7 @@ Vagrant.configure(2) do |config|
   config.vm.define "ovn-vtep", autostart: false do |ovnvtep|
     ovnvtep.vm.host_name = vagrant_config['ovnvtep']['host_name']
     ovnvtep.vm.network "private_network", ip: vagrant_config['ovnvtep']['ip']
-    ovnvtep.vm.network "private_network", ip: vagrant_config['ovnvtep']['prov-ip'], netmask: netmask
+    ovnvtep.vm.network "private_network", ip: vagrant_config['ovnvtep']['prov-ip'], netmask: netmask, virtualbox__intnet: "providernet"
     ovnvtep.vm.provision "shell", path: "provisioning/setup-base.sh", privileged: false,
       :args => "#{vagrant_config['ovnvtep']['mtu']} #{setup_base_common_args}"
     ovnvtep.vm.provision "shell", path: "provisioning/setup-vtep.sh", privileged: false, :args => "#{vagrant_config['ovncontroller']['ip']} #{vagrant_config['ovndb']['ip']}"

@@ -36,7 +36,7 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
     _extension_drivers = ['port_security']
 
     def setUp(self):
-        impl_idl_ovn.OvsdbOvnIdl = fakes.FakeOvsdbOvnIdl()
+        impl_idl_ovn.OvsdbNbOvnIdl = fakes.FakeOvsdbNbOvnIdl()
         config.cfg.CONF.set_override('extension_drivers',
                                      self._extension_drivers,
                                      group='ml2')
@@ -44,7 +44,7 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
         mm = manager.NeutronManager.get_plugin().mechanism_manager
         self.mech_driver = mm.mech_drivers['ovn'].obj
         self.mech_driver.initialize()
-        self.mech_driver._ovn_property = fakes.FakeOvsdbOvnIdl()
+        self.mech_driver._nb_ovn = fakes.FakeOvsdbNbOvnIdl()
 
         self.fake_subnet = fakes.FakeSubnet.create_one_subnet().info()
         self.fake_port_no_sg = fakes.FakePort.create_one_port().info()
@@ -199,9 +199,9 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                                set_context=True, tenant_id='test',
                                **kwargs) as port:
                     self.assertTrue(
-                        self.mech_driver._ovn.create_lport.called)
+                        self.mech_driver._nb_ovn.create_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.create_lport
+                        (self.mech_driver._nb_ovn.create_lport
                          ).call_args_list[0][1])
                     self.assertEqual(['00:00:00:00:00:01 10.0.0.2 10.0.0.4'],
                                      called_args_dict.get('port_security'))
@@ -212,9 +212,9 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                         data, port['port']['id'])
                     req.get_response(self.api)
                     self.assertTrue(
-                        self.mech_driver._ovn.set_lport.called)
+                        self.mech_driver._nb_ovn.set_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.set_lport
+                        (self.mech_driver._nb_ovn.set_lport
                          ).call_args_list[0][1])
                     self.assertEqual(['00:00:00:00:00:02 10.0.0.2 10.0.0.4'],
                                      called_args_dict.get('port_security'))
@@ -228,9 +228,9 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                                set_context=True, tenant_id='test',
                                **kwargs) as port:
                     self.assertTrue(
-                        self.mech_driver._ovn.create_lport.called)
+                        self.mech_driver._nb_ovn.create_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.create_lport
+                        (self.mech_driver._nb_ovn.create_lport
                          ).call_args_list[0][1])
                     self.assertEqual([],
                                      called_args_dict.get('port_security'))
@@ -241,9 +241,9 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                         data, port['port']['id'])
                     req.get_response(self.api)
                     self.assertTrue(
-                        self.mech_driver._ovn.set_lport.called)
+                        self.mech_driver._nb_ovn.set_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.set_lport
+                        (self.mech_driver._nb_ovn.set_lport
                          ).call_args_list[0][1])
                     self.assertEqual([],
                                      called_args_dict.get('port_security'))
@@ -259,15 +259,16 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                                arg_list=('allowed_address_pairs',),
                                set_context=True, tenant_id='test',
                                **kwargs) as port:
+                    port_ip = port['port'].get('fixed_ips')[0]['ip_address']
                     self.assertTrue(
-                        self.mech_driver._ovn.create_lport.called)
+                        self.mech_driver._nb_ovn.create_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.create_lport
+                        (self.mech_driver._nb_ovn.create_lport
                          ).call_args_list[0][1])
                     self.assertEqual(
                         tools.UnorderedList(
                             ["22:22:22:22:22:22 2.2.2.2",
-                             port['port']['mac_address'] + ' ' + '10.0.0.2'
+                             port['port']['mac_address'] + ' ' + port_ip
                              + ' ' + '1.1.1.1']),
                         called_args_dict.get('port_security'))
 
@@ -282,13 +283,13 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                         data, port['port']['id'])
                     req.get_response(self.api)
                     self.assertTrue(
-                        self.mech_driver._ovn.set_lport.called)
+                        self.mech_driver._nb_ovn.set_lport.called)
                     called_args_dict = (
-                        (self.mech_driver._ovn.set_lport
+                        (self.mech_driver._nb_ovn.set_lport
                          ).call_args_list[0][1])
                     self.assertEqual(tools.UnorderedList(
                         ["22:22:22:22:22:22 2.2.2.2",
-                         "00:00:00:00:00:01 10.0.0.2",
+                         "00:00:00:00:00:01 " + port_ip,
                          old_mac + " 1.1.1.1"]),
                         called_args_dict.get('port_security'))
 
@@ -300,7 +301,7 @@ class OVNMechanismDriverTestCase(test_plugin.Ml2PluginV2TestCase):
         super(OVNMechanismDriverTestCase, self).setUp()
         mm = manager.NeutronManager.get_plugin().mechanism_manager
         self.mech_driver = mm.mech_drivers['ovn'].obj
-        self.mech_driver._ovn_property = fakes.FakeOvsdbOvnIdl()
+        self.mech_driver._nb_ovn = fakes.FakeOvsdbNbOvnIdl()
         self.mech_driver._insert_port_provisioning_block = mock.Mock()
         self.mech_driver.vif_type = portbindings.VIF_TYPE_OVS
 
@@ -323,13 +324,21 @@ class TestOVNMechansimDriverNetworksV2(test_plugin.TestMl2NetworksV2,
 class TestOVNMechansimDriverSubnetsV2(test_plugin.TestMl2SubnetsV2,
                                       OVNMechanismDriverTestCase):
 
-    # TODO(rtheis): Debug test case failure.
+    # NOTE(rtheis): Mock the OVN port update since it is getting subnet
+    # information for ACL processing. This interferes with the update_port
+    # mock already done by the test.
     def test_subnet_update_ipv4_and_ipv6_pd_v6stateless_subnets(self):
-        pass
+        with mock.patch.object(self.mech_driver, '_update_port_in_ovn'):
+            super(TestOVNMechansimDriverSubnetsV2, self).\
+                test_subnet_update_ipv4_and_ipv6_pd_v6stateless_subnets()
 
-    # TODO(rtheis): Debug test case failure.
+    # NOTE(rtheis): Mock the OVN port update since it is getting subnet
+    # information for ACL processing. This interferes with the update_port
+    # mock already done by the test.
     def test_subnet_update_ipv4_and_ipv6_pd_slaac_subnets(self):
-        pass
+        with mock.patch.object(self.mech_driver, '_update_port_in_ovn'):
+            super(TestOVNMechansimDriverSubnetsV2, self).\
+                test_subnet_update_ipv4_and_ipv6_pd_slaac_subnets()
 
 
 class TestOVNMechansimDriverPortsV2(test_plugin.TestMl2PortsV2,
@@ -343,11 +352,6 @@ class TestOVNMechansimDriverPortsV2(test_plugin.TestMl2PortsV2,
             arg_list=(portbindings.HOST_ID,),
             expected_status=exc.HTTPConflict.code,
             expected_error='PortBound')
-
-    # TODO(rtheis): Remove once [1] is fixed.
-    # [1] https://review.openstack.org/#/c/310682/
-    def test_create_router_port_and_fail_create_postcommit(self):
-        pass
 
 
 class TestOVNMechansimDriverAllowedAddressPairs(

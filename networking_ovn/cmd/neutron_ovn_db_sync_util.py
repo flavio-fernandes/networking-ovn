@@ -83,9 +83,14 @@ def main():
                       '"repair"'), mode)
         return
 
-    if cfg.CONF.core_plugin.endswith('Ml2Plugin'):
+    # Validate and modify core plugin and ML2 mechanism drivers for syncing.
+    if cfg.CONF.core_plugin.endswith('.Ml2Plugin'):
         cfg.CONF.core_plugin = (
             'networking_ovn.cmd.neutron_ovn_db_sync_util.Ml2Plugin')
+        if 'ovn' not in cfg.CONF.ml2.mechanism_drivers:
+            LOG.error(_LE('No "ovn" mechanism driver found : "%s".'),
+                      cfg.CONF.ml2.mechanism_drivers)
+            return
         cfg.CONF.ml2.mechanism_drivers = ['ovn-sync']
         conf.service_plugins = ['networking_ovn.l3.l3_ovn.OVNL3RouterPlugin']
     else:
@@ -93,14 +98,14 @@ def main():
         return
 
     try:
-        ovn_api = impl_idl_ovn.OvsdbOvnIdl(None)
+        ovn_api = impl_idl_ovn.OvsdbNbOvnIdl(None)
     except RuntimeError:
-        LOG.error(_LE('Invalid --ovn-ovsdb_connection parameter provided.'))
+        LOG.error(_LE('Invalid --ovn-ovn_nb_connection parameter provided.'))
         return
 
     core_plugin = manager.NeutronManager.get_plugin()
     ovn_driver = core_plugin.mechanism_manager.mech_drivers['ovn-sync'].obj
-    ovn_driver._ovn_property = ovn_api
+    ovn_driver._nb_ovn = ovn_api
 
     synchronizer = ovn_nb_sync.OvnNbSynchronizer(
         core_plugin, ovn_api, mode, ovn_driver)

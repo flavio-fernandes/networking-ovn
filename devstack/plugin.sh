@@ -147,7 +147,8 @@ function configure_ovn_plugin {
                  print ",".join(extensions.ML2_SUPPORTED_API_EXTENSIONS_NEUTRON_L3)')
         fi
         NEUTRON_CONF=/etc/neutron/neutron.conf
-        iniset $NEUTRON_CONF ovn ovsdb_connection "$OVN_NB_REMOTE"
+        iniset $NEUTRON_CONF ovn ovn_nb_connection "$OVN_NB_REMOTE"
+        iniset $NEUTRON_CONF ovn ovn_sb_connection "$OVN_SB_REMOTE"
         iniset $NEUTRON_CONF ovn ovn_l3_mode "$OVN_L3_MODE"
     fi
 
@@ -492,9 +493,7 @@ if is_service_enabled q-svc || is_ovn_service_enabled ovn-northd || is_ovn_servi
                 echo "OVN_L3_CREATE_PUBLIC_NETWORK=True is being ignored because either"
                 echo "NEUTRON_CREATE_INITIAL_NETWORKS or OVN_L3_MODE is set to False"
             else
-                add_net_subnet_router
                 create_public_bridge
-                add_public_network_id_to_tempest_conf
             fi
         fi
     fi

@@ -88,20 +88,20 @@ class OvsdbNbOvnIdl(ovn_api.API):
                                                ext_id[0], ext_id[1],
                                                if_exists)
 
-    def create_lport(self, lport_name, lswitch_name, may_exist=True,
-                     **columns):
-        return cmd.AddLogicalPortCommand(self, lport_name, lswitch_name,
+    def create_lswitch_port(self, lport_name, lswitch_name, may_exist=True,
+                            **columns):
+        return cmd.AddLSwitchPortCommand(self, lport_name, lswitch_name,
                                          may_exist, **columns)
 
-    def set_lport(self, lport_name, if_exists=True, **columns):
-        return cmd.SetLogicalPortCommand(self, lport_name,
+    def set_lswitch_port(self, lport_name, if_exists=True, **columns):
+        return cmd.SetLSwitchPortCommand(self, lport_name,
                                          if_exists, **columns)
 
-    def delete_lport(self, lport_name=None, lswitch=None,
-                     ext_id=None, if_exists=True):
+    def delete_lswitch_port(self, lport_name=None, lswitch_name=None,
+                            ext_id=None, if_exists=True):
         if lport_name is not None:
-            return cmd.DelLogicalPortCommand(self, lport_name,
-                                             lswitch, if_exists)
+            return cmd.DelLSwitchPortCommand(self, lport_name,
+                                             lswitch_name, if_exists)
         else:
             raise RuntimeError(_("Currently only supports "
                                  "delete by lport-name"))
@@ -118,7 +118,7 @@ class OvsdbNbOvnIdl(ovn_api.API):
                 return row.external_ids
         return {}
 
-    def get_all_logical_ports_ids(self):
+    def get_all_logical_switch_ports_ids(self):
         result = {}
         for row in self._tables['Logical_Switch_Port'].rows.values():
             result[row.name] = row.external_ids
@@ -225,8 +225,9 @@ class OvsdbNbOvnIdl(ovn_api.API):
         return cmd.DelLRouterPortCommand(self, name, lrouter,
                                          if_exists)
 
-    def set_lrouter_port_in_lport(self, lport, lrouter_port):
-        return cmd.SetLRouterPortInLPortCommand(self, lport, lrouter_port)
+    def set_lrouter_port_in_lswitch_port(self, lswitch_port, lrouter_port):
+        return cmd.SetLRouterPortInLSwitchPortCommand(self, lswitch_port,
+                                                      lrouter_port)
 
     def add_acl(self, lswitch, lport, **columns):
         return cmd.AddACLCommand(self, lswitch, lport, **columns)

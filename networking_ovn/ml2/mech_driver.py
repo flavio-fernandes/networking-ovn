@@ -38,7 +38,7 @@ from networking_ovn.common import config
 from networking_ovn.common import constants as ovn_const
 from networking_ovn.common import utils
 from networking_ovn.ml2 import qos_driver
-from networking_ovn import ovn_nb_sync
+from networking_ovn import ovn_db_sync
 from networking_ovn.ovsdb import impl_idl_ovn
 from networking_ovn.ovsdb import ovsdb_monitor
 
@@ -143,13 +143,13 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         if trigger.im_class == ovsdb_monitor.OvnWorker:
             # Call the synchronization task if its ovn worker
             # This sync neutron DB to OVN-NB DB only in inconsistent states
-            self.synchronizer = ovn_nb_sync.OvnNbSynchronizer(
+            self.nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
                 self._plugin,
                 self._nb_ovn,
                 config.get_ovn_neutron_sync_mode(),
                 self
             )
-            self.synchronizer.sync()
+            self.nb_synchronizer.sync()
 
     def _process_sg_notification(self, resource, event, trigger, **kwargs):
         sg_id = None
@@ -213,7 +213,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                 vlan_id = None
                 if segid is not None:
                     vlan_id = int(segid)
-                txn.add(self._nb_ovn.create_lport(
+                txn.add(self._nb_ovn.create_lswitch_port(
                     lport_name='provnet-%s' % network['id'],
                     lswitch_name=lswitch_name,
                     addresses=['unknown'],
@@ -436,7 +436,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             # The lport_name *must* be neutron port['id'].  It must match the
             # iface-id set in the Interfaces table of the Open_vSwitch
             # database which nova sets to be the port ID.
-            txn.add(self._nb_ovn.create_lport(
+            txn.add(self._nb_ovn.create_lswitch_port(
                     lport_name=port['id'],
                     lswitch_name=lswitch_name,
                     addresses=ovn_port_info.addresses,
@@ -510,7 +510,8 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         subnet_cache = {}
 
         with self._nb_ovn.transaction(check_error=True) as txn:
-            txn.add(self._nb_ovn.set_lport(lport_name=port['id'],
+            txn.add(self._nb_ovn.set_lswitch_port(
+                    lport_name=port['id'],
                     addresses=ovn_port_info.addresses,
                     external_ids=external_ids,
                     parent_name=ovn_port_info.parent_name,
@@ -576,7 +577,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         """
         port = context.current
         with self._nb_ovn.transaction(check_error=True) as txn:
-            txn.add(self._nb_ovn.delete_lport(port['id'],
+            txn.add(self._nb_ovn.delete_lswitch_port(port['id'],
                     utils.ovn_name(port['network_id'])))
             txn.add(self._nb_ovn.delete_acl(
                     utils.ovn_name(port['network_id']), port['id']))

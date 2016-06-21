@@ -14,7 +14,7 @@
 
 import mock
 
-from networking_ovn import ovn_nb_sync
+from networking_ovn import ovn_db_sync
 from networking_ovn.tests.unit.ml2 import test_mech_driver
 
 
@@ -219,7 +219,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_driver.get_ovn_port_options = mock.Mock()
         ovn_driver.get_ovn_port_options.return_value = mock.ANY
         ovn_api.delete_lswitch = mock.Mock()
-        ovn_api.delete_lport = mock.Mock()
+        ovn_api.delete_lswitch_port = mock.Mock()
 
         l3_plugin.create_lrouter_in_ovn = mock.Mock()
         l3_plugin.create_lrouter_port_in_ovn = mock.Mock()
@@ -276,13 +276,13 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.delete_lswitch.assert_has_calls(
             delete_lswitch_calls, any_order=True)
 
-        self.assertEqual(ovn_api.delete_lport.call_count,
+        self.assertEqual(ovn_api.delete_lswitch_port.call_count,
                          len(del_port_list))
-        delete_lport_calls = [mock.call(lport_name=port['id'],
-                                        lswitch=port['lswitch'])
-                              for port in del_port_list]
-        ovn_api.delete_lport.assert_has_calls(
-            delete_lport_calls, any_order=True)
+        delete_lswitch_port_calls = [mock.call(lport_name=port['id'],
+                                               lswitch_name=port['lswitch'])
+                                     for port in del_port_list]
+        ovn_api.delete_lswitch_port.assert_has_calls(
+            delete_lswitch_port_calls, any_order=True)
 
         self.assertEqual(ovn_api.add_static_route.call_count,
                          len(add_static_route_list))
@@ -348,7 +348,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         del_router_port_list = [{'id': 'lrp-p3r1', 'router': 'neutron-r1'}]
         create_router_port_list = self.get_sync_router_ports
 
-        ovn_nb_synchronizer = ovn_nb_sync.OvnNbSynchronizer(
+        ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
             self.plugin, self.mech_driver._nb_ovn, 'repair', self.mech_driver)
         self._test_ovn_nb_sync_helper(ovn_nb_synchronizer,
                                       self.networks,
@@ -375,7 +375,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         add_static_route_list = []
         del_static_route_list = []
 
-        ovn_nb_synchronizer = ovn_nb_sync.OvnNbSynchronizer(
+        ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
             self.plugin, self.mech_driver._nb_ovn, 'log', self.mech_driver)
         self._test_ovn_nb_sync_helper(ovn_nb_synchronizer,
                                       self.networks,

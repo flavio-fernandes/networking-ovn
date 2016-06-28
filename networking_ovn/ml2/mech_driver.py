@@ -25,14 +25,16 @@ from neutron.callbacks import registry
 from neutron.callbacks import resources
 from neutron import context as n_context
 from neutron.db import provisioning_blocks
+from neutron.extensions import multiprovidernet as mpnet
 from neutron.extensions import portbindings
 from neutron.extensions import portsecurity as psec
 from neutron.extensions import providernet as pnet
 from neutron import manager
+from neutron.plugins.common import constants as plugin_const
 from neutron.plugins.ml2 import driver_api
 from neutron.services.qos import qos_consts
 
-from networking_ovn._i18n import _, _LI
+from networking_ovn._i18n import _, _LI, _LW
 from networking_ovn.common import acl as ovn_acl
 from networking_ovn.common import config
 from networking_ovn.common import constants as ovn_const
@@ -85,6 +87,9 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         self._nb_ovn = None
         self._sb_ovn = None
         self._plugin_property = None
+        self.sg_enabled = ovn_acl.is_sg_enabled()
+        if cfg.CONF.SECURITYGROUP.firewall_driver:
+            LOG.warning(_LW('Firewall driver configuration is ignored'))
         self._setup_vif_port_bindings()
         self.subscribe()
         self.qos_driver = qos_driver.OVNQosDriver(self)
@@ -115,7 +120,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         else:
             self.vif_type = portbindings.VIF_TYPE_OVS,
             self.vif_details = {
-                portbindings.CAP_PORT_FILTER: True,
+                portbindings.CAP_PORT_FILTER: self.sg_enabled,
             }
 
     def subscribe(self):
@@ -124,15 +129,16 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                            events.AFTER_CREATE)
 
         # Handle security group/rule notifications
-        registry.subscribe(self._process_sg_notification,
-                           resources.SECURITY_GROUP,
-                           events.AFTER_UPDATE)
-        registry.subscribe(self._process_sg_notification,
-                           resources.SECURITY_GROUP_RULE,
-                           events.AFTER_CREATE)
-        registry.subscribe(self._process_sg_notification,
-                           resources.SECURITY_GROUP_RULE,
-                           events.BEFORE_DELETE)
+        if self.sg_enabled:
+            registry.subscribe(self._process_sg_notification,
+                               resources.SECURITY_GROUP,
+                               events.AFTER_UPDATE)
+            registry.subscribe(self._process_sg_notification,
+                               resources.SECURITY_GROUP_RULE,
+                               events.AFTER_CREATE)
+            registry.subscribe(self._process_sg_notification,
+                               resources.SECURITY_GROUP_RULE,
+                               events.BEFORE_DELETE)
 
     def post_fork_initialize(self, resource, event, trigger, **kwargs):
         # NOTE(rtheis): This will initialize all workers (API, RPC,
@@ -178,6 +184,43 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                                                sg_id,
                                                rule=sg_rule,
                                                is_add_acl=is_add_acl)
+
+    def create_network_precommit(self, context):
+        """Allocate resources for a new network.
+
+        :param context: NetworkContext instance describing the new
+        network.
+
+        Create a new network, allocating resources as necessary in the
+        database. Called inside transaction context on session. Call
+        cannot block.  Raising an exception will result in a rollback
+        of the current transaction.
+        """
+        network = context.current
+
+        # TODO(rtheis): Add support for multi-provider networks when
+        # routed networks are supported.
+        if self._get_attribute(network, mpnet.SEGMENTS):
+            msg = _('Multi-provider networks are not supported')
+            raise n_exc.InvalidInput(error_message=msg)
+
+        network_segments = context.network_segments
+        network_type = network_segments[0]['network_type']
+        segmentation_id = network_segments[0]['segmentation_id']
+        physical_network = network_segments[0]['physical_network']
+        LOG.debug('Creating network with type %(network_type)s, '
+                  'segmentation ID %(segmentation_id)s, '
+                  'physical network %(physical_network)s' %
+                  {'network_type': network_type,
+                   'segmentation_id': segmentation_id,
+                   'physical_network': physical_network})
+
+        if network_type not in [plugin_const.TYPE_LOCAL,
+                                plugin_const.TYPE_FLAT,
+                                plugin_const.TYPE_GENEVE,
+                                plugin_const.TYPE_VLAN]:
+            msg = _('Network type %s is not supported') % network_type
+            raise n_exc.InvalidInput(error_message=msg)
 
     def create_network_postcommit(self, context):
         """Create a network.
@@ -336,7 +379,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             tag = int(param_dict['tag'])
             if tag < 0 or tag > 4095:
                 msg = _('Invalid binding:profile. tag "%s" must be '
-                        'an int between 1 and 4096, inclusive.') % tag
+                        'an integer between 0 and 4095, inclusive') % tag
                 raise n_exc.InvalidInput(error_message=msg)
 
         return param_dict

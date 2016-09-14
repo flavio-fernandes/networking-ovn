@@ -18,10 +18,6 @@ fi
 # By default OVN_NATIVE_DHCP is True
 OVN_NATIVE_DHCP=$(trueorfalse True OVN_NATIVE_DHCP)
 
-# TODO(azbiswas): Remove this code
-OVN_REPO=https://github.com/azbiswas/ovs.git
-OVN_BRANCH=flake_failure
-
 # This function is invoked by DevStack's Neutron plugin setup
 # code and is being overridden here since the OVN devstack
 # plugin will handle the install.

@@ -13,6 +13,9 @@
 ##OFFLINE=True
 ##RECLONE=no
 
+## HOST_IP=<IP address of host running everything else>
+## NEUTRON_CREATE_INITIAL_NETWORKS=False
+
 DATABASE_PASSWORD=password
 RABBIT_PASSWORD=password
 SERVICE_PASSWORD=password

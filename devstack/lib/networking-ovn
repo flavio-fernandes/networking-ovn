@@ -382,7 +382,7 @@ function start_ovs {
     if is_ovn_service_enabled ovn-controller || is_ovn_service_enabled ovn-controller-vtep ; then
         ovs-vsctl --no-wait set open_vswitch . external-ids:ovn-remote="$OVN_SB_REMOTE"
         ovs-vsctl --no-wait set open_vswitch . external-ids:ovn-bridge="br-int"
-        ovs-vsctl --no-wait set open_vswitch . external-ids:ovn-encap-type="geneve"
+        ovs-vsctl --no-wait set open_vswitch . external-ids:ovn-encap-type="geneve,vxlan"
         ovs-vsctl --no-wait set open_vswitch . external-ids:ovn-encap-ip="$HOST_IP"
 
         ovn_base_setup_bridge br-int
@@ -455,7 +455,7 @@ function start_ovn {
         # a pid file to work with, so ...
         echo -n "Waiting for ovn-northd to start ... "
         OVN_NORTHD_PID="/usr/local/var/run/openvswitch/ovn-northd.pid"
-        local testcmd="test -e $OVN_NORTH_PID"
+        local testcmd="test -e $OVN_NORTHD_PID"
         test_with_retry "$testcmd" "ovn-northd did not start" $SERVICE_TIMEOUT 1
         echo "done."
         sudo ovs-appctl -t ovn-northd vlog/set "PATTERN:CONSOLE:%D{%Y-%m-%dT%H:%M:%S.###Z}|%05N|%c%T|%p|%m"

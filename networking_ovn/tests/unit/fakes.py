@@ -52,6 +52,7 @@ class FakeOvsdbNbOvnIdl(object):
         self.get_all_logical_switches_ids = mock.Mock()
         self.get_logical_switch_ids = mock.Mock()
         self.get_all_logical_switch_ports_ids = mock.Mock()
+        self.get_acls_for_lswitches = mock.Mock()
         self.create_lrouter = mock.Mock()
         self.update_lrouter = mock.Mock()
         self.delete_lrouter = mock.Mock()
@@ -88,6 +89,8 @@ class FakeOvsdbSbOvnIdl(object):
         self.get_chassis_hostname_and_physnets = mock.Mock()
         self.get_chassis_hostname_and_physnets.return_value = {}
         self.get_all_chassis = mock.Mock()
+        self.get_chassis_datapath_and_iface_types = mock.Mock()
+        self.get_chassis_datapath_and_iface_types.return_value = ('fake', '')
 
 
 class FakeOvsdbTransaction(object):

@@ -12,8 +12,8 @@
 
 from neutron_lib import exceptions as n_exc
 from oslo_log import log
-import retrying
 import six
+import tenacity
 
 from neutron.agent.ovsdb import impl_idl
 from neutron.agent.ovsdb.native import connection
@@ -42,8 +42,9 @@ class OvsdbConnectionUnavailable(n_exc.ServiceUnavailable):
 # Retry forever to get the OVN NB and SB IDLs. Wait 2^x * 1 seconds between
 # each retry, up to 180 seconds, then 180 seconds afterwards.
 def get_ovn_idls(driver, trigger):
-    @retrying.retry(wait_exponential_multiplier=1000,
-                    wait_exponential_max=(180 * 1000))
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(max=180),
+        reraise=True)
     def get_ovn_idl_retry(cls, driver, trigger):
         LOG.info(_LI('Getting %(cls)s for %(trigger)s with retry'),
                  {'cls': cls.__name__, 'trigger': trigger.im_class.__name__})
@@ -458,7 +459,8 @@ class OvsdbSbOvnIdl(ovn_api.SbAPI):
                 OvsdbSbOvnIdl.ovsdb_connection.start(
                     driver, table_name_list=['Chassis'])
             else:
-                OvsdbSbOvnIdl.ovsdb_connection.start()
+                OvsdbSbOvnIdl.ovsdb_connection.start(
+                    table_name_list=['Chassis'])
             self.idl = OvsdbSbOvnIdl.ovsdb_connection.idl
             self.ovsdb_timeout = cfg.get_ovn_ovsdb_timeout()
         except Exception as e:
@@ -482,3 +484,12 @@ class OvsdbSbOvnIdl(ovn_api.SbAPI):
         for ch in self.idl.tables['Chassis'].rows.values():
             chassis_list.append(ch.name)
         return chassis_list
+
+    def get_chassis_datapath_and_iface_types(self, hostname):
+        try:
+            chassis = idlutils.row_by_value(self.idl, 'Chassis',
+                                            'hostname', hostname)
+        except idlutils.RowNotFound:
+            return (None, None)
+        return (chassis.external_ids.get('datapath-type', ''),
+                chassis.external_ids.get('iface-types', ''))

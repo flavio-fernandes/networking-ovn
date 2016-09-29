@@ -16,11 +16,13 @@ import mock
 from webob import exc
 
 from neutron_lib import exceptions as n_exc
+from oslo_db import exception as os_db_exc
 
 from neutron.callbacks import events
 from neutron.callbacks import registry
 from neutron.callbacks import resources
 from neutron.common import utils as n_utils
+from neutron.db import provisioning_blocks
 from neutron.extensions import portbindings
 from neutron import manager
 from neutron.plugins.ml2 import config
@@ -32,7 +34,6 @@ from neutron.tests.unit.plugins.ml2 import test_plugin
 from networking_ovn.common import acl as ovn_acl
 from networking_ovn.common import constants as ovn_const
 from networking_ovn.common import utils as ovn_utils
-from networking_ovn.ovsdb import impl_idl_ovn
 from networking_ovn.tests.unit import fakes
 
 
@@ -42,8 +43,6 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
     _extension_drivers = ['port_security']
 
     def setUp(self):
-        impl_idl_ovn.OvsdbNbOvnIdl = fakes.FakeOvsdbNbOvnIdl()
-        impl_idl_ovn.OvsdbSbOvnIdl = fakes.FakeOvsdbSbOvnIdl()
         config.cfg.CONF.set_override('extension_drivers',
                                      self._extension_drivers,
                                      group='ml2')
@@ -227,15 +226,15 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
             {'tag': 1024, 'parent_name': 1024},
             {'parent_name': 'test'},
             {'tag': 'test'},
-            {'vtep_physical_switch': 'psw1'},
-            {'vtep_logical_switch': 'lsw1'},
-            {'vtep_physical_switch': 'psw1', 'vtep_logical_switch': 1234},
-            {'vtep_physical_switch': 1234, 'vtep_logical_switch': 'lsw1'},
-            {'vtep_physical_switch': 'psw1', 'vtep_logical_switch': 'lsw1',
+            {'vtep-physical-switch': 'psw1'},
+            {'vtep-logical-switch': 'lsw1'},
+            {'vtep-physical-switch': 'psw1', 'vtep-logical-switch': 1234},
+            {'vtep-physical-switch': 1234, 'vtep-logical-switch': 'lsw1'},
+            {'vtep-physical-switch': 'psw1', 'vtep-logical-switch': 'lsw1',
              'tag': 1024},
-            {'vtep_physical_switch': 'psw1', 'vtep_logical_switch': 'lsw1',
+            {'vtep-physical-switch': 'psw1', 'vtep-logical-switch': 'lsw1',
              'parent_name': 'fakename'},
-            {'vtep_physical_switch': 'psw1', 'vtep_logical_switch': 'lsw1',
+            {'vtep-physical-switch': 'psw1', 'vtep-logical-switch': 'lsw1',
              'tag': 1024, 'parent_name': 'fakename'},
         ]
         with self.network(set_context=True, tenant_id='test') as net1:
@@ -554,12 +553,64 @@ class TestOVNMechanismDriver(test_plugin.Ml2PluginV2TestCase):
                     self.assertEqual(
                         1, self.nb_ovn.update_address_set.call_count)
 
+    def test_set_port_status_up(self):
+        with self.network(set_context=True, tenant_id='test') as net1, \
+            self.subnet(network=net1) as subnet1, \
+            self.port(subnet=subnet1, set_context=True,
+                      tenant_id='test') as port1, \
+            mock.patch('neutron.db.provisioning_blocks.'
+                       'provisioning_complete') as pc:
+                self.mech_driver.set_port_status_up(port1['port']['id'])
+                pc.assert_called_once_with(
+                    mock.ANY,
+                    port1['port']['id'],
+                    resources.PORT,
+                    provisioning_blocks.L2_AGENT_ENTITY
+                )
+
+    def test_set_port_status_down(self):
+        with self.network(set_context=True, tenant_id='test') as net1, \
+            self.subnet(network=net1) as subnet1, \
+            self.port(subnet=subnet1, set_context=True,
+                      tenant_id='test') as port1, \
+            mock.patch('neutron.db.provisioning_blocks.'
+                       'add_provisioning_component') as apc:
+                self.mech_driver.set_port_status_down(port1['port']['id'])
+                apc.assert_called_once_with(
+                    mock.ANY,
+                    port1['port']['id'],
+                    resources.PORT,
+                    provisioning_blocks.L2_AGENT_ENTITY
+                )
+
+    def test_set_port_status_down_not_found(self):
+        with mock.patch('neutron.db.provisioning_blocks.'
+                        'add_provisioning_component') as apc:
+            self.mech_driver.set_port_status_down('foo')
+            apc.assert_not_called()
+
+    def test_set_port_status_concurrent_delete(self):
+        exc = os_db_exc.DBReferenceError('', '', '', '')
+        with self.network(set_context=True, tenant_id='test') as net1, \
+            self.subnet(network=net1) as subnet1, \
+            self.port(subnet=subnet1, set_context=True,
+                      tenant_id='test') as port1, \
+            mock.patch('neutron.db.provisioning_blocks.'
+                       'add_provisioning_component',
+                       side_effect=exc) as apc:
+                self.mech_driver.set_port_status_down(port1['port']['id'])
+                apc.assert_called_once_with(
+                    mock.ANY,
+                    port1['port']['id'],
+                    resources.PORT,
+                    provisioning_blocks.L2_AGENT_ENTITY
+                )
+
 
 class OVNMechanismDriverTestCase(test_plugin.Ml2PluginV2TestCase):
     _mechanism_drivers = ['logger', 'ovn']
 
     def setUp(self):
-        impl_idl_ovn.OvsdbNbOvnIdl = fakes.FakeOvsdbNbOvnIdl()
         config.cfg.CONF.set_override('tenant_network_types',
                                      ['geneve'],
                                      group='ml2')
@@ -572,7 +623,6 @@ class OVNMechanismDriverTestCase(test_plugin.Ml2PluginV2TestCase):
         self.mech_driver._nb_ovn = fakes.FakeOvsdbNbOvnIdl()
         self.mech_driver._sb_ovn = fakes.FakeOvsdbSbOvnIdl()
         self.mech_driver._insert_port_provisioning_block = mock.Mock()
-        self.mech_driver.vif_type = portbindings.VIF_TYPE_OVS
 
 
 class TestOVNMechansimDriverBasicGet(test_plugin.TestMl2BasicGet,
@@ -854,7 +904,7 @@ class TestOVNMechansimDriverDHCPOptions(OVNMechanismDriverTestCase):
         self.mech_driver._nb_ovn.add_dhcp_options.assert_not_called()
         self.mech_driver._nb_ovn.get_port_dhcp_options.assert_not_called()
 
-    def test_get_port_dhcpv4_options_port_dhcp_disabled(self):
+    def test_get_port_dhcpv4_options_port_dhcp_disabled_1(self):
         port = {
             'id': 'foo-port',
             'device_owner': 'compute:None',
@@ -866,6 +916,29 @@ class TestOVNMechansimDriverDHCPOptions(OVNMechanismDriverTestCase):
 
         self.assertIsNone(self.mech_driver.get_port_dhcpv4_options(port))
         self.mech_driver._nb_ovn.get_subnet_dhcp_options.assert_not_called()
+        self.mech_driver._nb_ovn.add_dhcp_options.assert_not_called()
+        self.mech_driver._nb_ovn.get_port_dhcp_options.assert_not_called()
+
+    def test_get_port_dhcpv4_options_port_dhcp_disabled_2(self):
+        port = {
+            'id': 'foo-port',
+            'device_owner': 'compute:None',
+            'fixed_ips': [{'subnet_id': 'foo-subnet',
+                           'ip_address': '10.0.0.11'}],
+            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'dhcp_disabled',
+                                 'opt_value': 'False'},
+                                {'ip_version': 6, 'opt_name': 'dhcp_disabled',
+                                 'opt_value': 'True'}]
+        }
+
+        expected_dhcpv4_opts = {
+            'cidr': '10.0.0.0/24', 'external_ids': {'subnet_id': 'foo-subnet'},
+            'options': {'router': '10.0.0.1', 'mtu': '1400'}}
+        self.mech_driver._nb_ovn.get_subnet_dhcp_options.return_value = (
+            expected_dhcpv4_opts)
+
+        self.assertEqual(expected_dhcpv4_opts,
+                         self.mech_driver.get_port_dhcpv4_options(port))
         self.mech_driver._nb_ovn.add_dhcp_options.assert_not_called()
         self.mech_driver._nb_ovn.get_port_dhcp_options.assert_not_called()
 
@@ -912,85 +985,3 @@ class TestOVNMechansimDriverDHCPOptions(OVNMechanismDriverTestCase):
         self.assertIsNone(
             self.mech_driver._get_delete_lsp_dhcpv4_options_cmd(port))
         self.mech_driver._nb_ovn.delete_dhcp_options.assert_not_called()
-
-    def test__get_clean_stale_dhcpv4_options_cmd_owner_changed(self):
-        port = {'device_owner': 'neutron:router_interface'}
-        original_port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1200'}]}
-
-        fake_cmd = 'foo'
-        with mock.patch.object(self.mech_driver,
-                               '_get_delete_lsp_dhcpv4_options_cmd',
-                               return_value=fake_cmd):
-            self.assertEqual(
-                fake_cmd,
-                self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                    mock.ANY, port, original_port))
-
-    def test__get_clean_stale_dhcpv4_options_dhcp_disabled(self):
-        port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'dhcp_disabled',
-                                 'opt_value': 'True'}]}
-        original_port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1200'}]}
-
-        fake_cmd = 'foo'
-        with mock.patch.object(self.mech_driver,
-                               '_get_delete_lsp_dhcpv4_options_cmd',
-                               return_value=fake_cmd):
-            self.assertEqual(
-                fake_cmd,
-                self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                    None, port, original_port))
-
-    def test__get_clean_stale_dhcpv4_options_extra_dhcp_opts_removed(self):
-        port = {'device_owner': 'compute:None'}
-        original_port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1200'}]}
-
-        fake_cmd = 'foo'
-        with mock.patch.object(self.mech_driver,
-                               '_get_delete_lsp_dhcpv4_options_cmd',
-                               return_value=fake_cmd):
-            self.assertEqual(
-                fake_cmd,
-                self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                    mock.ANY, port, original_port))
-
-    def test__get_clean_stale_dhcpv4_options_cmd_negative1(self):
-        # Test case no extra dhcp options assigned to port before.
-        original_port = {'device_owner': 'compute:None'}
-        self.assertIsNone(
-            self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                mock.ANY, mock.ANY, original_port))
-
-    def test__get_clean_stale_dhcpv4_options_cmd_negative2(self):
-        # Test case owner changed from neutron managed port type.
-        original_port = {
-            'device_owner': 'neutron:XX',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1200'}]}
-        self.assertIsNone(
-            self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                mock.ANY, mock.ANY, original_port))
-
-    def test__get_clean_stale_dhcpv4_options_cmd_negative3(self):
-        # Test case extra dhcp options updated.
-        original_port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1200'}]}
-        port = {
-            'device_owner': 'compute:None',
-            'extra_dhcp_opts': [{'ip_version': 4, 'opt_name': 'mtu',
-                                 'opt_value': '1250'}]}
-        self.assertIsNone(
-            self.mech_driver._get_clean_stale_port_dhcpv4_options_cmd(
-                mock.ANY, port, original_port))
